@@ -41,7 +41,7 @@ def validate_envelope(payload: str) -> PacketEnvelope:
     fields = {'version', 'survey_id', 'layout_digest', 'tile_id', 'revision_id', 'packet_id', 'body'}
     if not isinstance(data, dict) or set(data) != fields:
         raise ValueError('invalid station packet fields')
-    if type(data['version']) is not int or data['version'] != 1:
+    if type(data['version']) is not int or data['version'] not in (1, 2):
         raise ValueError('unsupported station packet version')
     for key in ('survey_id', 'tile_id'):
         if not isinstance(data[key], str) or not data[key].strip():

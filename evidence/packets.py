@@ -28,9 +28,11 @@ def initialize_packet_store(db: sqlite3.Connection):
 
 
 def record_issued_packet(db: sqlite3.Connection, revision: FrozenRevision,
-                         layout_digest: str, body: dict) -> IssuedPacket:
+                         layout_digest: str, body: dict, version: int = 1) -> IssuedPacket:
+    if version not in (1, 2):
+        raise ValueError('unsupported station packet version')
     packet_id = uuid4().hex
-    payload = json.dumps({'version': 1, 'packet_id': packet_id,
+    payload = json.dumps({'version': version, 'packet_id': packet_id,
                           'survey_id': revision.survey_id, 'layout_digest': layout_digest,
                           'tile_id': revision.tile_id, 'revision_id': revision.revision_id,
                           'body': body}, sort_keys=True, separators=(',', ':'), allow_nan=False)

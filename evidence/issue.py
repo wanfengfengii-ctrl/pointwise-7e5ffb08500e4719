@@ -1,5 +1,6 @@
 import sqlite3
 
+from evidence.budget_body import build_budget_body
 from evidence.packets import IssuedPacket, record_issued_packet
 from evidence.terminals import inspect_terminals
 from survey.catalog import load_survey
@@ -33,3 +34,12 @@ def issue(db: sqlite3.Connection, revision_id: str) -> IssuedPacket:
     revision = load_revision(db, revision_id)
     layout = load_survey(db, revision.survey_id)
     return record_issued_packet(db, revision, layout_digest(layout), _packet_body(layout, revision))
+
+
+def issue_budget(db: sqlite3.Connection, revision_id: str, threshold: int) -> IssuedPacket:
+    if type(threshold) is not int or not 0 <= threshold <= 100:
+        raise ValueError('threshold must be an integer from 0 to 100')
+    revision = load_revision(db, revision_id)
+    layout = load_survey(db, revision.survey_id)
+    body = build_budget_body(layout, revision, threshold)
+    return record_issued_packet(db, revision, layout_digest(layout), body, version=2)

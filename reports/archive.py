@@ -19,6 +19,26 @@ class ReportRecord:
     handover: HandoverExcerpt
 
 
+@dataclass(frozen=True)
+class BudgetDecision:
+    probe_a: str
+    probe_b: str
+    threshold: int
+    budget: int
+    minimum: int | None
+    passed: bool
+
+
+@dataclass(frozen=True)
+class BudgetReport:
+    report_id: int
+    survey_id: str
+    layout_digest: str
+    parents: tuple[AcceptanceReceipt, ...]
+    decision: BudgetDecision
+    receipt: PublishReceipt
+
+
 def initialize_report_archive(db: sqlite3.Connection):
     db.execute('''CREATE TABLE IF NOT EXISTS review_reports (
         report_id INTEGER PRIMARY KEY,
@@ -39,6 +59,24 @@ def initialize_report_archive(db: sqlite3.Connection):
     db.execute('''CREATE TABLE IF NOT EXISTS handover_excerpts (
         report_id INTEGER PRIMARY KEY REFERENCES review_reports(report_id),
         snapshot TEXT NOT NULL
+    )''')
+    db.execute('''CREATE TABLE IF NOT EXISTS budget_reports (
+        report_id INTEGER PRIMARY KEY,
+        survey_id TEXT NOT NULL,
+        layout_digest TEXT NOT NULL,
+        parents_json TEXT NOT NULL,
+        probe_a TEXT NOT NULL,
+        probe_b TEXT NOT NULL,
+        threshold INTEGER NOT NULL CHECK (threshold BETWEEN 0 AND 100),
+        budget INTEGER NOT NULL CHECK (budget >= 0),
+        minimum INTEGER CHECK (minimum >= 0),
+        passed INTEGER NOT NULL CHECK (passed = CASE WHEN minimum IS NOT NULL
+                                                    AND minimum <= budget THEN 1 ELSE 0 END)
+    )''')
+    db.execute('''CREATE TABLE IF NOT EXISTS budget_receipts (
+        report_id INTEGER PRIMARY KEY REFERENCES budget_reports(report_id),
+        survey_id TEXT NOT NULL,
+        packet_ids_json TEXT NOT NULL
     )''')
 
 
@@ -87,3 +125,41 @@ def load_report(db: sqlite3.Connection, report_id: int) -> ReportRecord | None:
     excerpt_fields['packet_ids'] = tuple(excerpt_fields['packet_ids'])
     return ReportRecord(report_id, survey_id, digest, parents, decision, receipt,
                         HandoverExcerpt(**excerpt_fields))
+
+
+def commit_budget_report(db: sqlite3.Connection, survey_id: str, layout_digest: str,
+                         parents: tuple[AcceptanceReceipt, ...],
+                         decision: BudgetDecision) -> BudgetReport:
+    parents_json = _json([asdict(parent) for parent in parents])
+    db.execute('BEGIN IMMEDIATE')
+    with db:
+        cursor = db.execute('''INSERT INTO budget_reports
+                               (survey_id, layout_digest, parents_json, probe_a, probe_b,
+                                threshold, budget, minimum, passed)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                            (survey_id, layout_digest, parents_json, decision.probe_a,
+                             decision.probe_b, decision.threshold, decision.budget,
+                             decision.minimum, decision.passed))
+        report_id = cursor.lastrowid
+        receipt = make_publish_receipt(report_id, survey_id, parents)
+        db.execute('INSERT INTO budget_receipts VALUES (?, ?, ?)',
+                   (receipt.report_id, receipt.survey_id, _json(receipt.packet_ids)))
+    return BudgetReport(report_id, survey_id, layout_digest, parents, decision, receipt)
+
+
+def load_budget_report(db: sqlite3.Connection, report_id: int) -> BudgetReport | None:
+    if type(report_id) is not int or not 0 < report_id <= 2**63 - 1:
+        raise ValueError('invalid report identity')
+    row = db.execute('''SELECT r.survey_id, r.layout_digest, r.parents_json, r.probe_a, r.probe_b,
+                               r.threshold, r.budget, r.minimum, r.passed, p.survey_id, p.packet_ids_json
+                        FROM budget_reports AS r
+                        JOIN budget_receipts AS p USING (report_id)
+                        WHERE r.report_id = ?''', (report_id,)).fetchone()
+    if row is None:
+        return None
+    (survey_id, digest, parents_json, a, b, threshold, budget, minimum, passed,
+     receipt_survey, receipt_ids) = row
+    parents = tuple(AcceptanceReceipt(**item) for item in json.loads(parents_json))
+    decision = BudgetDecision(a, b, threshold, budget, minimum, bool(passed))
+    receipt = PublishReceipt(report_id, receipt_survey, tuple(json.loads(receipt_ids)))
+    return BudgetReport(report_id, survey_id, digest, parents, decision, receipt)
